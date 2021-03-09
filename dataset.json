@@ -1,0 +1,5 @@
+{
+      "source_folder": "./training_data",
+      "labels": ["male","female"],
+      "audio_formats": [".flac"]
+}
