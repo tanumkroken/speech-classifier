@@ -40,6 +40,8 @@ from sklearn.preprocessing import LabelEncoder
 
 from datetime import datetime
 from pathlib import Path
+import sys
+from pandarallel import pandarallel
 from collections import defaultdict
 from classifier.utils import init_logger
 
@@ -86,79 +88,125 @@ class GenderClassifier:
     get_height(node: `Optional[AVLNode]`)
         Return the height of the given node.
     '''
-    def __init__(self, dataset: list, logger):
+    def __init__(self, source_folder: str, number_of_classes: int, labels: list, data_folders: list , audio_formats: list, logger):
         ''' Initialize the class'''
-        self.dataset = dataset
-        self.label = defaultdict(list)
+        self.source = source_folder
+        self.classes = number_of_classes
+        self.labels = {}
         self.logger = logger
-        self.csv_file = "randomized_dataset.csv"
-        for tup in dataset:
-            self.label[tup[0]].append(tup[1])
-            self.label[tup[0]].append(tup[2])
+        self.formats = audio_formats
+        self.count = 0
+        index = 0
+        for label in labels:
+            self.labels[label] = data_folders[index]
+            index += 1
 
-    def prepare_dataset(self, load: bool = False):
+    def randomize_daset(self, csv_file)-> pd.DataFrame:
         ''' Organize and randomize the dataset'''
-        if load is False:
-            # Organize the dataset and randomize it
-            logger.info('Organizing and randomizing the datasets')
-            index = 0
-            dataframes = []
-            for label in self.label:
-                files = []
-                folder = self.label[label][0]
-                file_ext = self.label[label][1]
-                p = Path(folder)
-                file_list = p.glob('*' + file_ext)
-                for file in file_list:
-                    files.append(file.name)
-                # Create the dataframe for the labeled set
-                df = pd.DataFrame(files)
-                df = df.rename(columns = {0:'file'})
-                # Add the label index
-                df['label'] = index
-                logger.info('Dataset labeled {}: {}, {} files'.format(label,folder,len(files)))
-                # Store the df instance
-                dataframes.append(df)
-                index += 1
-            # Join the dataframes
-            self.dataset = pd.concat(dataframes, ignore_index=True)
-            # Randomizing our files to be able to split into train, validation and test
-            self.dataset = self.dataset.sample(frac=1, random_state=42).reset_index(drop=True)
-            # Store the randomized set if we want to reproduce the results later
-            self.dataset.to_csv(self.csv_file)
-            logger.info('Randomized dataset written to "{}"'.format(self.csv_file))
-        # Load the randomized datset from file
+         # Organize the dataset and randomize it
+        self.logger.info('Organizing and randomizing the datasets')
+        index = 0
+        dataframes = []
+        for label in self.labels:
+            files = []
+            folder = self.labels[label]
+            file_ext = self.formats[0]
+            p = Path(folder)
+            file_list = p.glob('*' + file_ext)
+            for file in file_list:
+                files.append(file.absolute())
+            # Create the dataframe for the labeled set
+            df = pd.DataFrame(files)
+            df = df.rename(columns = {0:'file'})
+            # Add the label index
+            df['label'] = index
+            self.logger.info('Dataset labeled {}: {}, {} files'.format(label,folder,len(files)))
+            # Store the df instance
+            dataframes.append(df)
+            index += 1
+        # Join the dataframes
+        dataset = pd.concat(dataframes, ignore_index=True)
+        # Randomizing our files to be able to split into train, validation and test
+        dataset = dataset.sample(frac=1, random_state=42).reset_index(drop=True)
+        # Store the randomized set if we want to reproduce the results later
+        dataset.to_csv(csv_file)
+        self.logger.info('Randomized dataset written to "{}"'.format(csv_file))
+        return dataset
+
+    def load_randomized_dataset(self, csv_file: str) -> pd.DataFrame:
+        # Load the randomized dataset from file
+        p = Path(csv_file)
+        if p.exists() is True:
+            dataset = pd.read_csv(csv_file)
+            self.logger.info('Randomized dataset loaded from "{}"'.format(csv_file))
         else:
-            self.dataset = pd.read_csv(self.csv_file)
-            logger.info('Randomized dataset loaded from "{}"'.format(self.csv_file))
-        return
+            self.logger.error('No randomized dataset {} to load'.format(csv_file))
+            sys.exit()
+        return dataset
 
-    def train(self,train:int, validate:int, test:int):
-        ''' The the neural network'''
+    def check_label_balance(self,df : pd.DataFrame, bins: list):
+        ''' Check the balance of the training, validation and test datasets'''
+        # Split the dataset int training, validation & test
+        train, validate, test = self.split_data_set(df, bins)
         # Training set
-        size = len(self.dataset.index)
-        training = int(size*train/100)
-        validating = int(size*validate/100)
-        testing = size - training - validating
-        # Training set
-        df_train = self.dataset[:training]
-        result = df_train['label'].value_counts(normalize=True)
-        self.logger.info('Training set Length: {}, Normalized split '.format(result))
+        result = train['label'].value_counts(normalize=True).tolist()
+        n = len(train.index)
+        self.logger.info('Training set length: {}, Normalized split {}'.format(n,result))
         # Validation set
-        df_validate = self.dataset[training:validating]
-        result = df_validate['label'].value_counts(normalize=True)
-        self.logger.info('Validation set: {}'.format(result))
+        n = len(validate.index)
+        result = validate['label'].value_counts(normalize=True).tolist()
+        self.logger.info('Validation set length: {}, Normalized split {}'.format(n,result))
         # Test set
-        df_test = self.dataset[validating:]
-        result = df_test['label'].value_counts(normalize=True)
-        self.logger.info('Test set: {}'.format(result))
+        n = len(test.index)
+        result = test['label'].value_counts(normalize=True).tolist()
+        self.logger.info('Test set length: {}, Normalized split {}'.format(n,result))
+        # Check
+        # print (len(df_train.index)+len(df_validate.index)+len(df_test.index),' == ', size)
         return
 
-    def extract_features(files):
-        ''' Function to extract features from a audio file '''
+    def split_data_set(self, df: pd.DataFrame,bins: list) -> tuple:
+        ''' Split the dataset into train, validate and test bins '''
+        size = len(df.index)
+        n_train = int(size*bins[0]/100)
+        n_validate = int(size*bins[1]/100)
+        n_test = size - n_train - n_validate
+        # Data bins
+        train = df[:n_train]
+        validate = df[n_train:n_train + n_validate]
+        test = df[n_train+n_validate:]
+        return train, validate, test
 
-        # Sets the name to be the path to where the file is in my computer
-        file_name = os.path.join(os.path.abspath('voice')+'/'+str(files.file))
+    def split_array(self, df: np.ndarray,bins: list) -> tuple:
+        ''' Split the dataset into train, validate and test bins '''
+        size = len(df)
+        n_train = int(size*bins[0]/100)
+        n_validate = int(size*bins[1]/100)
+        n_test = size - n_train - n_validate
+        # Data bins
+        train = df[:n_train]
+        validate = df[n_train:n_train + n_validate]
+        test = df[n_train+n_validate:]
+        return train, validate, test
+
+    def compute_dataset_features(self,  dataset: pd.DataFrame)->np.asarray:
+        # Test on a small dataset
+        # Extract the features from the dataset
+        # pandarallel will execute the feature extraction on multiple processors
+        pandarallel.initialize()
+        start_time = datetime.now()
+        self.logger.info('Extracting dataset features .....')
+        features_label = dataset.parallel_apply(self.extract_features, axis=1)
+        self.logger.info('Elapsed time: {}'.format(datetime.now()-start_time))
+        # Save the feature extraction for later retrieval
+        np.save('features_label', features_label)
+        return features_label
+
+
+    def extract_features(self, files):
+        ''' Function to extract features from an audio file '''
+
+        # The path to the audio file
+        file_name = str(files.file)
 
         # Loads the audio file as a floating point time series and assigns the default sample rate
         # Sample rate is set to 22050 by default
@@ -183,8 +231,78 @@ class GenderClassifier:
         tonnetz = np.mean(librosa.feature.tonnetz(y=librosa.effects.harmonic(X),
                                                   sr=sample_rate).T,axis=0)
 
-
         # We add also the classes of each file as a label at the end
         label = files.label
 
         return mfccs, chroma, mel, contrast, tonnetz, label
+
+    def load_features(self, dataset: str)-> np.asarray:
+        # loading the features
+        features_label = np.load(dataset, allow_pickle=True)
+        return features_label
+
+    def train(self, trained_model:str, features_label: pd.DataFrame, bins: list) -> tuple:
+        ''' Train the Neural Network'''
+        # We create an empty list where we will concatenate all the features into one long feature
+        # for each file to feed into our neural network
+
+        features = []
+        for i in range(0, len(features_label)):
+            features.append(np.concatenate((features_label[i][0], features_label[i][1],
+                                            features_label[i][2], features_label[i][3],
+                                            features_label[i][4]), axis=0))
+        # Similarly, we create a list where we will store all the labels
+        labels = []
+        for i in range(0, len(features_label)):
+            labels.append(features_label[i][5])
+        # Hot encoding y and pre processing X and y
+        # Setting our X as a numpy array to feed into the neural network
+        X = np.array(features)
+        # Setting our y
+        y = np.array(labels)
+        # Hot encoding y
+        lb = LabelEncoder()
+        y = to_categorical(lb.fit_transform(y))
+        # Print the shape
+        self.logger.info('X shape: {}'.format(X.shape))
+        self.logger.info('y shape: {}'.format(y.shape))
+        # Split into train, validate, test
+        X_train, X_val, X_test = self.split_array(X, bins)
+        y_train, y_val, y_test = self.split_array(y,bins)
+        ss = StandardScaler()
+        X_train = ss.fit_transform(X_train)
+        X_val = ss.transform(X_val)
+        X_test = ss.transform(X_test)
+
+        # Build the NN
+        # Build a simple dense model with early stopping with softmax for categorical classification
+        # Note that we use softmax for binary classification because it gives us a better result
+        # than sigmoid for our probabilities in case we decide to use a voting classifier
+
+        self.logger.info('Starting the model training')
+        model = Sequential()
+
+        model.add(Dense(193, input_shape=(193,), activation = 'relu'))
+        model.add(Dropout(0.1))
+
+        model.add(Dense(128, activation = 'relu'))
+        model.add(Dropout(0.25))
+
+        model.add(Dense(128, activation = 'relu'))
+        model.add(Dropout(0.5))
+
+        model.add(Dense(2, activation = 'softmax'))
+
+        model.compile(loss='categorical_crossentropy', metrics=['accuracy'], optimizer='adam')
+
+        early_stop = EarlyStopping(monitor='val_loss', min_delta=0, patience=100, verbose=1, mode='auto')
+
+        # fitting the model with the train data and validation with the validation data
+        # we used early stop with patience 15
+        history = model.fit(X_train, y_train, batch_size=256, epochs=100,
+                            validation_data=(X_val, y_val),
+                            callbacks=[early_stop])
+        # Save the trained model
+        model.save(trained_model)
+
+        return model, history

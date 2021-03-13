@@ -77,10 +77,10 @@ def init_logger(app_name, multiple: bool, loglevel='INFO') -> logging.Logger:
             '%(message)s'
         )
         fhlog_format = (
-            # '%(asctime)s: '
+             '%(asctime)s: '
             # '%(name)s - '
             # '%(funcName)30s - '
-            # '%(levelname)8s: '
+             '%(levelname)8s: '
             '%(message)s'
         )
         fh_error_log_format = (

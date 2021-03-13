@@ -1,5 +1,7 @@
 {
-      "source_folder": "./training_data",
+      "source_folder": "./training_data/",
+      "number_of_classes": "2",
       "labels": ["male","female"],
+      "bin_size": ["70","20"],
       "audio_formats": [".flac"]
 }
